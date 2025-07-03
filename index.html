@@ -113,24 +113,17 @@
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   
-  async function reverseGeocode(lat, lon) {
-    // Skip IP-based geocoding for local files and go straight to hosted services
-    if (location.protocol === 'file:' || location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
+  async function reverseGeocode(lat, lon){
+    // Detect if we're running locally (file:// protocol) and prioritize Nominatim
+    const isLocalFile = window.location.protocol === 'file:';
+    
+    if (isLocalFile) {
+      console.log('Local file detected, using Nominatim as primary geocoder');
       try {
         return await reverseGeocodeWithNominatim(lat, lon);
-      } catch (error) {
-        console.warn('Nominatim failed for local file, trying Google:', error.message);
-        try {
+      } catch (nominatimError) {
+        console.warn('Nominatim failed, trying Google as fallback:', nominatimError);
         return await reverseGeocodeWithGoogle(lat, lon);
-        } catch (googleError) {
-          console.warn('Google also failed, trying OpenSeaMap for water bodies:', googleError);
-          try {
-            return await reverseGeocodeWithOpenSeaMap(lat, lon);
-          } catch (openSeaMapError) {
-            console.warn('OpenSeaMap also failed, using fallback logic');
-            return getFallbackLocation(lat, lon);
-          }
-        }
       }
     }
     
@@ -138,213 +131,100 @@
     try {
       return await reverseGeocodeWithGoogle(lat, lon);
     } catch (error) {
-      console.warn('Google geocoding failed, falling back to Nominatim:', error.message);
+      console.warn('Google geocoding failed, fallback to Nominatim:', error.message);
       try {
         return await reverseGeocodeWithNominatim(lat, lon);
       } catch (nominatimError) {
-        console.warn('Nominatim also failed, trying OpenSeaMap for water bodies:', nominatimError);
-        try {
-          return await reverseGeocodeWithOpenSeaMap(lat, lon);
-        } catch (openSeaMapError) {
-          console.warn('OpenSeaMap also failed, using fallback logic');
-          return getFallbackLocation(lat, lon);
-        }
-      }
-    }
-  }
-  
-  // Smart fallback logic for when all geocoding services fail
-  function getFallbackLocation(lat, lon) {
-    // First priority: Use cached location name if available
-    if (lastLocationName) {
-      console.log('Using cached location name due to all geocoding services failing:', lastLocationName);
-      return lastLocationName;
-    }
-    
-    // Second priority: Try to determine if we're likely in water based on rough coordinates
-    // Only show "Waterway" if we have strong evidence of being in water (major oceans far from land)
-    const isLikelyInWater = isDefinitelyInWater(lat, lon);
-    
-    if (isLikelyInWater) {
-      console.log('Location appears to be in open water, showing waterway designation');
-      return `Waterway (${lat.toFixed(1)}°, ${lon.toFixed(1)}°)`;
-    }
-    
-    // Default: Show location unavailable for connection failures on land
-    console.log('Connection failed and location unclear, showing unavailable status');
-    return `Location unavailable (${lat.toFixed(1)}°, ${lon.toFixed(1)}°)`;
-  }
-  
-  // Conservative water detection - only returns true for locations very likely to be in major water bodies
-  function isDefinitelyInWater(lat, lon) {
-    // Very conservative ranges for major oceans far from coastlines
-    // Pacific Ocean (central areas)
-    if (lat >= -40 && lat <= 40 && lon >= -150 && lon <= -120) return true; // Central Pacific
-    if (lat >= -40 && lat <= 40 && lon >= 140 && lon <= 180) return true; // Western Pacific
-    
-    // Atlantic Ocean (central areas)
-    if (lat >= -40 && lat <= 40 && lon >= -50 && lon <= -10) return true; // Central Atlantic
-    
-    // Indian Ocean (central areas)
-    if (lat >= -40 && lat <= 10 && lon >= 60 && lon <= 100) return true; // Central Indian Ocean
-    
-    // Southern Ocean (very far south)
-    if (lat <= -50) return true; // Deep Southern Ocean
-    
-    // Arctic Ocean (very far north)
-    if (lat >= 75) return true; // Deep Arctic Ocean
-    
-    // Default: assume land or near-coastal (don't assume water)
-    return false;
-  }
-  
-  // OpenSeaMap geocoding service - specialized for water bodies
-  async function reverseGeocodeWithOpenSeaMap(lat, lon) {
-    console.log('Trying OpenSeaMap geocoding for water bodies...');
-    
-    // OpenSeaMap is built on OpenStreetMap, so we can use their marine-focused data
-    // We'll use multiple endpoints to get better water body identification
-    const endpoints = [
-      // Primary: OpenSeaMap's own infrastructure (if available)
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=en&addressdetails=1&extratags=1&zoom=10`,
-      // Fallback: OSM Nominatim with marine focus
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=en&addressdetails=1&extratags=1&zoom=8`,
-      // Alternative: Lower zoom for large water bodies
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=en&addressdetails=1&extratags=1&zoom=6`
-    ];
-    
-    for (const endpoint of endpoints) {
-      try {
-        const res = await fetchWithRetry(endpoint);
-        const data = await res.json();
+        console.warn('Nominatim also failed, checking for known water bodies:', nominatimError);
         
-        if (!data || !data.address) {
-          continue;
+        // Final fallback: Check if coordinates are in a known body of water
+        const waterBody = identifyWaterBody(lat, lon);
+        if (waterBody) {
+          console.log('Identified water body:', waterBody);
+          return waterBody;
         }
         
-        // Look for water body indicators in the response
-        const waterBodyName = extractWaterBodyFromOSM(data);
-        if (waterBodyName) {
-          console.log('OpenSeaMap identified water body:', waterBodyName);
-          return waterBodyName;
-        }
-        
-      } catch (error) {
-        console.warn('OpenSeaMap endpoint failed:', endpoint, error);
-        continue;
+        // If all else fails, return a generic waterway location
+        console.warn('All geocoding methods failed, using generic waterway designation');
+        return `Waterway (${lat.toFixed(1)}°, ${lon.toFixed(1)}°)`;
       }
     }
-    
-    throw new Error('OpenSeaMap could not identify water body');
   }
   
-  // Extract water body names from OpenStreetMap/OpenSeaMap data
-  function extractWaterBodyFromOSM(osmData) {
-    const addr = osmData.address;
-    const extratags = osmData.extratags || {};
-    const tags = osmData.tags || {};
-    
-    // Check for direct water body identifiers
-    if (addr.body_of_water) {
-      return addr.body_of_water;
+  // Function to identify major bodies of water based on coordinates
+  function identifyWaterBody(lat, lon) {
+    // === GREAT LAKES (North America) ===
+    if (lat >= 46.4 && lat <= 48.3 && lon >= -92.2 && lon <= -84.3) {
+      return "Lake Superior";
+    }
+    if (lat >= 41.6 && lat <= 45.8 && lon >= -87.8 && lon <= -84.8) {
+      return "Lake Michigan";
+    }
+    if (lat >= 43.0 && lat <= 46.4 && lon >= -84.8 && lon <= -79.7) {
+      return "Lake Huron";
+    }
+    if (lat >= 41.2 && lat <= 42.9 && lon >= -83.5 && lon <= -78.9) {
+      return "Lake Erie";
+    }
+    if (lat >= 43.2 && lat <= 44.3 && lon >= -79.8 && lon <= -76.1) {
+      return "Lake Ontario";
     }
     
-    if (addr.sea) {
-      return addr.sea;
+    // === MAJOR LAKES (Worldwide) ===
+    if (lat >= 36.8 && lat <= 47.0 && lon >= 46.8 && lon <= 54.0) {
+      return "Caspian Sea";
+    }
+    if (lat >= 51.5 && lat <= 55.8 && lon >= 103.4 && lon <= 109.6) {
+      return "Lake Baikal";
+    }
+    if (lat >= -3.0 && lat <= 0.5 && lon >= 31.4 && lon <= 34.9) {
+      return "Lake Victoria";
     }
     
-    if (addr.ocean) {
-      return addr.ocean;
+    // === SEAS AND GULFS (Much more precise bounds) ===
+    // Gulf of Mexico - more precise to actual water area
+    if (lat >= 18.5 && lat <= 30.0 && lon >= -97.5 && lon <= -81.0) {
+      return "Gulf of Mexico";
     }
     
-    if (addr.lake) {
-      return addr.lake;
+    // Caribbean Sea - more precise bounds
+    if (lat >= 10.0 && lat <= 22.0 && lon >= -87.0 && lon <= -60.0) {
+      return "Caribbean Sea";
     }
     
-    if (addr.river) {
-      return addr.river;
+    // Red Sea - more precise
+    if (lat >= 12.9 && lat <= 28.0 && lon >= 32.3 && lon <= 43.5) {
+      return "Red Sea";
     }
     
-    if (addr.bay) {
-      return addr.bay;
+    if (lat >= 24.0 && lat <= 30.5 && lon >= 48.0 && lon <= 56.0) {
+      return "Persian Gulf";
+    }
+    if (lat >= 51.5 && lat <= 62.0 && lon >= -3.0 && lon <= 8.5) {
+      return "North Sea";
+    }
+    if (lat >= 53.8 && lat <= 65.9 && lon >= 9.0 && lon <= 30.3) {
+      return "Baltic Sea";
+    }
+    if (lat >= 40.9 && lat <= 46.6 && lon >= 27.4 && lon <= 41.8) {
+      return "Black Sea";
     }
     
-    if (addr.gulf) {
-      return addr.gulf;
+    // === OCEANS (More conservative bounds) ===
+    if (lat >= 10.0 && lat <= 60.0 && lon >= -170.0 && lon <= -120.0) {
+      return "Pacific Ocean";
     }
-    
-    if (addr.strait) {
-      return addr.strait;
+    if (lat >= 20.0 && lat <= 70.0 && lon >= -70.0 && lon <= -10.0) {
+      return "Atlantic Ocean";
     }
-    
-    if (addr.channel) {
-      return addr.channel;
+    if (lat >= -50.0 && lat <= 30.0 && lon >= 40.0 && lon <= 110.0) {
+      return "Indian Ocean";
     }
-    
-    // Check extratags for marine features
-    if (extratags.natural === 'water' && extratags.name) {
-      return extratags.name;
+    if (lat >= 70.0 && lat <= 90.0) {
+      return "Arctic Ocean";
     }
-    
-    if (extratags.natural === 'bay' && extratags.name) {
-      return extratags.name;
-    }
-    
-    if (extratags.place === 'sea' && extratags.name) {
-      return extratags.name;
-    }
-    
-    if (extratags.place === 'ocean' && extratags.name) {
-      return extratags.name;
-    }
-    
-    // Check tags for water features
-    if (tags.natural === 'water' && tags.name) {
-      return tags.name;
-    }
-    
-    if (tags.natural === 'bay' && tags.name) {
-      return tags.name;
-    }
-    
-    if (tags.place === 'sea' && tags.name) {
-      return tags.name;
-    }
-    
-    if (tags.place === 'ocean' && tags.name) {
-      return tags.name;
-    }
-    
-    // Check if we're in a water area based on place type
-    if (osmData.place_type === 'sea' || osmData.place_type === 'ocean' || osmData.place_type === 'lake') {
-      return osmData.display_name ? osmData.display_name.split(',')[0] : null;
-    }
-    
-    // Check category for water features
-    if (osmData.category === 'natural' && osmData.type === 'water' && osmData.display_name) {
-      const name = osmData.display_name.split(',')[0];
-      if (name && !name.match(/^\d+/) && name.length > 2) {
-        return name;
-      }
-    }
-    
-    // Check if the location is primarily water-based from the display name
-    if (osmData.display_name) {
-      const displayName = osmData.display_name.toLowerCase();
-      const waterKeywords = ['sea', 'ocean', 'lake', 'bay', 'gulf', 'strait', 'channel', 'sound', 'lagoon', 'reservoir'];
-      
-      for (const keyword of waterKeywords) {
-        if (displayName.includes(keyword)) {
-          // Extract the water body name
-          const parts = osmData.display_name.split(',');
-          for (const part of parts) {
-            const trimmed = part.trim();
-            if (trimmed.toLowerCase().includes(keyword)) {
-              return trimmed;
-            }
-          }
-        }
-      }
+    if (lat >= -90.0 && lat <= -60.0) {
+      return "Southern Ocean";
     }
     
     return null;
@@ -511,19 +391,11 @@
     // Better error checking for ocean coordinates
     if (!addr || Object.keys(addr).length === 0) {
       console.warn('Nominatim returned empty address, checking for water bodies');
-      
-      // Try OpenSeaMap for water body identification
-      try {
-        const waterBodyName = await reverseGeocodeWithOpenSeaMap(lat, lon);
-        if (waterBodyName) {
-          return waterBodyName;
-        }
-      } catch (error) {
-        console.log('OpenSeaMap failed:', error.message);
+      const waterBody = identifyWaterBody(lat, lon);
+      if (waterBody) {
+        return waterBody;
       }
-
-      // Smart fallback logic
-      return getFallbackLocation(lat, lon);
+      throw new Error('Nominatim returned no address data and coordinates not in known water body');
     }
     
     window.isLocationInJapan = (addr.country_code === 'jp') || 
@@ -1000,8 +872,57 @@
         }
       }
       
-      // Handle wind waves logic
-      handleWindWaves(isWindy, isHot);
+      const windWaves = document.getElementById('wind-waves');
+      if (windWaves) {
+        if (isWindy) {
+          const repoBaseUrl = 'https://raw.githubusercontent.com/MrChallah/MrChallah.github.io/main/v4/';
+          const fallbackUrl = 'https://maps.gstatic.com/weather/v1/';
+          
+          windWaves.onerror = null;
+          windWaves.onload = null;
+          
+          windWaves.onerror = function() {
+            this.onerror = function() {
+              this.style.display = 'none';
+              
+              let textWind = document.getElementById('text-wind-indicator');
+              if (!textWind) {
+                textWind = document.createElement('span');
+                textWind.id = 'text-wind-indicator';
+                textWind.innerHTML = '💨';
+                textWind.style.cssText = 'position: absolute; top: 30px; left: 97%; transform: translateX(-50%); font-size: 12px; animation: windWave 1.5s ease-in-out infinite;';
+                weatherIcon.appendChild(textWind);
+              }
+              textWind.style.display = 'inline-block';
+            };
+            this.src = fallbackUrl + 'windy_breezy.svg';
+          };
+          
+          windWaves.src = repoBaseUrl + 'windy.svg';
+          windWaves.style.display = 'inline-block';
+          
+          if (isHot) {
+            windWaves.classList.remove('only-wind');
+            if (heatWaves) {
+              heatWaves.classList.add('with-wind');
+            }
+          } else {
+            windWaves.classList.add('only-wind');
+          }
+        } else {
+          windWaves.style.display = 'none';
+          windWaves.classList.remove('only-wind');
+          
+          const textWind = document.getElementById('text-wind-indicator');
+          if (textWind) {
+            textWind.style.display = 'none';
+          }
+          
+          if (heatWaves) {
+            heatWaves.classList.remove('with-wind');
+          }
+        }
+      }
     } catch (error) {
       console.error('Weather fetch failed:', error);
       
@@ -1487,93 +1408,6 @@
   placeEl.addEventListener('mouseleave', function() {
     this.style.opacity = '1';
   });
-  
-  // Separate function to handle wind waves logic and avoid timing issues
-  function handleWindWaves(isWindy, isHot) {
-    // Show wind waves if windy conditions
-    const windWaves = document.getElementById('wind-waves');
-    console.log('Wind waves element found:', !!windWaves, 'isWindy:', isWindy);
-    
-    if (windWaves) {
-      if (isWindy) {
-        console.log('Attempting to show wind waves...');
-        
-        // Load windy.svg icon
-        const repoBaseUrl = 'https://raw.githubusercontent.com/MrChallah/MrChallah.github.io/main/v4/';
-        const fallbackUrl = 'https://maps.gstatic.com/weather/v1/';
-        
-        // Clear any existing error handlers
-        windWaves.onerror = null;
-        windWaves.onload = null;
-        
-        // Set up error handler first
-        windWaves.onerror = function() {
-          console.log('Primary wind icon failed, trying fallback...');
-          this.onerror = function() {
-            console.log('Fallback wind icon also failed, using text fallback');
-            // If both icons fail, create a text-based wind indicator
-            this.style.display = 'none';
-            
-            // Create a text-based wind indicator as last resort
-            let textWind = document.getElementById('text-wind-indicator');
-            if (!textWind) {
-              textWind = document.createElement('span');
-              textWind.id = 'text-wind-indicator';
-              textWind.innerHTML = '💨';
-              textWind.style.cssText = 'position: absolute; top: 30px; left: 97%; transform: translateX(-50%); font-size: 12px; animation: windWave 1.5s ease-in-out infinite;';
-              const weatherIcon = document.getElementById('weather-icon');
-              weatherIcon.appendChild(textWind);
-            }
-            textWind.style.display = 'inline-block';
-          };
-          this.src = fallbackUrl + 'windy_breezy.svg';
-        };
-        
-        // Set up success handler
-        windWaves.onload = function() {
-          console.log('Wind icon loaded successfully');
-        };
-        
-        // Set the primary source
-        windWaves.src = repoBaseUrl + 'windy.svg';
-        windWaves.style.display = 'inline-block';
-        
-        console.log('Wind waves display set to inline-block, src:', windWaves.src);
-        
-        // Position wind waves - if no heat, center it; if heat, keep it to the right
-        if (isHot) {
-          windWaves.classList.remove('only-wind');
-          console.log('Wind waves positioned with heat waves');
-          // Update heat waves to show they're with wind
-          const heatWaves = document.getElementById('heat-waves');
-          if (heatWaves) {
-            heatWaves.classList.add('with-wind');
-          }
-        } else {
-          windWaves.classList.add('only-wind');
-          console.log('Wind waves positioned alone (only-wind)');
-        }
-      } else {
-        console.log('Not windy enough, hiding wind waves');
-        windWaves.style.display = 'none';
-        windWaves.classList.remove('only-wind');
-        
-        // Also hide text wind indicator if it exists
-        const textWind = document.getElementById('text-wind-indicator');
-        if (textWind) {
-          textWind.style.display = 'none';
-        }
-        
-        // Remove wind class from heat waves
-        const heatWaves = document.getElementById('heat-waves');
-        if (heatWaves) {
-          heatWaves.classList.remove('with-wind');
-        }
-      }
-    } else {
-      console.error('Wind waves element not found!');
-    }
-  }
   
   // Start immediately (with loading messages)
   updateLocationAndWeather(true);
