@@ -114,137 +114,33 @@
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   
   async function reverseGeocode(lat, lon){
-    // Detect if we're running locally (file:// protocol) and prioritize Nominatim
     const isLocalFile = window.location.protocol === 'file:';
     
     if (isLocalFile) {
       console.log('Local file detected, using Nominatim as primary geocoder');
-      try {
-        return await reverseGeocodeWithNominatim(lat, lon);
-      } catch (nominatimError) {
-        console.warn('Nominatim failed, trying Google as fallback:', nominatimError);
-        return await reverseGeocodeWithGoogle(lat, lon);
-      }
+      return await reverseGeocodeWithNominatim(lat, lon);
     }
     
-    // Try Google first for hosted environments
     try {
       return await reverseGeocodeWithGoogle(lat, lon);
     } catch (error) {
-      console.warn('Google geocoding failed, fallback to Nominatim:', error.message);
-      try {
-        return await reverseGeocodeWithNominatim(lat, lon);
-      } catch (nominatimError) {
-        console.warn('Nominatim also failed, checking for known water bodies:', nominatimError);
-        
-        // Final fallback: Check if coordinates are in a known body of water
-        const waterBody = identifyWaterBody(lat, lon);
-        if (waterBody) {
-          console.log('Identified water body:', waterBody);
-          return waterBody;
-        }
-        
-        // If all else fails, return a generic waterway location
-        console.warn('All geocoding methods failed, using generic waterway designation');
-        return `Waterway (${lat.toFixed(1)}°, ${lon.toFixed(1)}°)`;
-      }
+      console.warn('Google geocoding failed, falling back to Nominatim:', error.message);
+      return await reverseGeocodeWithNominatim(lat, lon);
     }
-  }
-  
-  // Function to identify major bodies of water based on coordinates
-  function identifyWaterBody(lat, lon) {
-    // === GREAT LAKES (North America) ===
-    if (lat >= 46.4 && lat <= 48.3 && lon >= -92.2 && lon <= -84.3) {
-      return "Lake Superior";
-    }
-    if (lat >= 41.6 && lat <= 45.8 && lon >= -87.8 && lon <= -84.8) {
-      return "Lake Michigan";
-    }
-    if (lat >= 43.0 && lat <= 46.4 && lon >= -84.8 && lon <= -79.7) {
-      return "Lake Huron";
-    }
-    if (lat >= 41.2 && lat <= 42.9 && lon >= -83.5 && lon <= -78.9) {
-      return "Lake Erie";
-    }
-    if (lat >= 43.2 && lat <= 44.3 && lon >= -79.8 && lon <= -76.1) {
-      return "Lake Ontario";
-    }
-    
-    // === MAJOR LAKES (Worldwide) ===
-    if (lat >= 36.8 && lat <= 47.0 && lon >= 46.8 && lon <= 54.0) {
-      return "Caspian Sea";
-    }
-    if (lat >= 51.5 && lat <= 55.8 && lon >= 103.4 && lon <= 109.6) {
-      return "Lake Baikal";
-    }
-    if (lat >= -3.0 && lat <= 0.5 && lon >= 31.4 && lon <= 34.9) {
-      return "Lake Victoria";
-    }
-    
-    // === SEAS AND GULFS (Much more precise bounds) ===
-    // Gulf of Mexico - more precise to actual water area
-    if (lat >= 18.5 && lat <= 30.0 && lon >= -97.5 && lon <= -81.0) {
-      return "Gulf of Mexico";
-    }
-    
-    // Caribbean Sea - more precise bounds
-    if (lat >= 10.0 && lat <= 22.0 && lon >= -87.0 && lon <= -60.0) {
-      return "Caribbean Sea";
-    }
-    
-    // Red Sea - more precise
-    if (lat >= 12.9 && lat <= 28.0 && lon >= 32.3 && lon <= 43.5) {
-      return "Red Sea";
-    }
-    
-    if (lat >= 24.0 && lat <= 30.5 && lon >= 48.0 && lon <= 56.0) {
-      return "Persian Gulf";
-    }
-    if (lat >= 51.5 && lat <= 62.0 && lon >= -3.0 && lon <= 8.5) {
-      return "North Sea";
-    }
-    if (lat >= 53.8 && lat <= 65.9 && lon >= 9.0 && lon <= 30.3) {
-      return "Baltic Sea";
-    }
-    if (lat >= 40.9 && lat <= 46.6 && lon >= 27.4 && lon <= 41.8) {
-      return "Black Sea";
-    }
-    
-    // === OCEANS (More conservative bounds) ===
-    if (lat >= 10.0 && lat <= 60.0 && lon >= -170.0 && lon <= -120.0) {
-      return "Pacific Ocean";
-    }
-    if (lat >= 20.0 && lat <= 70.0 && lon >= -70.0 && lon <= -10.0) {
-      return "Atlantic Ocean";
-    }
-    if (lat >= -50.0 && lat <= 30.0 && lon >= 40.0 && lon <= 110.0) {
-      return "Indian Ocean";
-    }
-    if (lat >= 70.0 && lat <= 90.0) {
-      return "Arctic Ocean";
-    }
-    if (lat >= -90.0 && lat <= -60.0) {
-      return "Southern Ocean";
-    }
-    
-    return null;
   }
   
   async function reverseGeocodeWithGoogle(lat, lon) {
     const res = await fetchWithRetry(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lon}&key=${GOOGLE_GEO_KEY}&language=en&result_type=locality|administrative_area_level_2|administrative_area_level_1|country`);
     const data = await res.json();
     
-    if (data.status === 'REQUEST_DENIED' || data.status === 'OVER_QUERY_LIMIT') {
-      console.warn('Google Geocoding API access issue:', data.status, data.error_message);
-      throw new Error(`Google API ${data.status}: ${data.error_message || 'Access denied or quota exceeded'}`);
-    }
-    
     if (data.status === 'OK' && data.results.length > 0) {
+      // Collect all components from all results to make a consistent decision
       let allCities = [];
       let allStates = [];
       let country = '';
       let isJapan = false;
       
+      // Process all results to gather comprehensive location data
       for (let resultIndex = 0; resultIndex < Math.min(data.results.length, 3); resultIndex++) {
         const result = data.results[resultIndex];
         const components = result.address_components;
@@ -253,30 +149,45 @@
           const types = component.types;
           const name = component.long_name;
           
+          // Check if location is in Japan
           if (types.includes('country') && (component.short_name === 'JP' || name === 'Japan')) {
             isJapan = true;
           }
           
+          // Collect potential city names with improved priority for specific locations
           if (types.includes('locality')) {
+            // Highest priority: actual localities (specific places like Punta Cana)
             allCities.push({ name, priority: 1, type: 'locality', source: `result_${resultIndex}` });
-          } else if (types.includes('administrative_area_level_2')) {
-            allCities.push({ name, priority: 2, type: 'admin_level_2', source: `result_${resultIndex}` });
-          } else if (types.includes('sublocality_level_1')) {
-            allCities.push({ name, priority: 3, type: 'sublocality', source: `result_${resultIndex}` });
+          } else if (types.includes('sublocality_level_1') || types.includes('sublocality')) {
+            // Second priority: specific sub-areas within cities
+            allCities.push({ name, priority: 2, type: 'sublocality', source: `result_${resultIndex}` });
+          } else if (types.includes('administrative_area_level_2') && !name.includes('County') && !name.includes('District') && !name.includes('Region')) {
+            // Third priority: administrative areas that are actual cities/towns (not just administrative regions)
+            allCities.push({ name, priority: 3, type: 'admin_level_2', source: `result_${resultIndex}` });
+          } else if (types.includes('administrative_area_level_3')) {
+            // Fourth priority: more specific administrative areas
+            allCities.push({ name, priority: 4, type: 'admin_level_3', source: `result_${resultIndex}` });
           }
           
+          // Collect state/region names
           if (types.includes('administrative_area_level_1')) {
             allStates.push({ name, source: `result_${resultIndex}` });
           }
           
+          // Set country (take first one found)
           if (types.includes('country') && !country) {
             country = name;
           }
         });
       }
       
+      console.log('All collected cities:', allCities);
+      console.log('All collected states:', allStates);
+      
+      // Store Japan status globally for weather icon selection
       window.isLocationInJapan = isJapan;
       
+      // Deduplicate cities while preserving the most specific ones
       const uniqueCities = [];
       allCities.forEach(cityObj => {
         const isDuplicate = uniqueCities.some(existing => 
@@ -287,20 +198,27 @@
         }
       });
       
+      // Filter out overly generic or administrative names that aren't specific locations
       const filteredCities = uniqueCities.filter(cityObj => {
         const name = cityObj.name;
-        const isDetailedDistrict = name.includes('-dong') || name.includes('dong,') || 
-                                 name.includes('(') || name.includes(')') ||
-                                 name.includes('Ward') || name.includes('District');
-        return !isDetailedDistrict;
+        const isGenericAdmin = name.includes('County') || name.includes('District') || 
+                              name.includes('Region') || name.includes('Prefecture') ||
+                              name.includes('Municipality') || name.includes('Province') ||
+                              name.includes('-dong') || name.includes('dong,') || 
+                              name.includes('(') || name.includes(')') ||
+                              name.includes('Ward');
+        return !isGenericAdmin;
       });
       
+      // Sort by priority (lower number = higher priority) to get the most specific location
       const citiesToConsider = filteredCities.length > 0 ? filteredCities : uniqueCities;
       citiesToConsider.sort((a, b) => a.priority - b.priority);
       
+      // Get the best state (most common one)
       const stateNames = allStates.map(s => s.name);
       const mostCommonState = stateNames.length > 0 ? stateNames[0] : '';
       
+      // Select final city and state with consistent redundancy rules
       let finalCity = '';
       let finalState = '';
       
@@ -308,31 +226,46 @@
         const bestCityObj = citiesToConsider[0];
         finalCity = bestCityObj.name;
         
+        console.log('Selected most specific city:', finalCity, 'from type:', bestCityObj.type, 'priority:', bestCityObj.priority);
+        
+        // Apply consistent state inclusion rules
         if (mostCommonState) {
+          // Always exclude state if it's exactly the same as city (case insensitive)
           if (finalCity.toLowerCase() === mostCommonState.toLowerCase()) {
             finalState = '';
+            console.log('Excluding state because it matches city exactly:', finalCity, '==', mostCommonState);
           }
+          // For Israel specifically, always exclude "Central District", "Northern District", etc. 
+          // when we have a proper city name, as these are administrative regions
           else if (country === 'Israel' && mostCommonState.toLowerCase().includes('district')) {
             finalState = '';
+            console.log('Excluding Israeli district for consistency:', mostCommonState);
           }
+          // For other locations, include state if it adds meaningful information
           else {
+            // Check if state is a generic administrative name that doesn't add value
             const genericStateTerms = ['region', 'province', 'territory', 'district', 'area'];
             const isGenericState = genericStateTerms.some(term => 
               mostCommonState.toLowerCase().includes(term)
             );
             
-            if (!isGenericState || bestCityObj.priority > 2) {
+            // Include state if it's not generic and provides useful geographic context
+            if (!isGenericState) {
               finalState = mostCommonState;
+              console.log('Including state for geographic context:', mostCommonState);
             } else {
               finalState = '';
+              console.log('Excluding generic state for specificity:', mostCommonState);
             }
           }
         }
       }
       
+      // If still no city, try administrative areas as backup
       if (!finalCity && mostCommonState) {
         finalCity = mostCommonState;
         finalState = '';
+        console.log('Using state as city (backup):', finalCity);
       }
       
       // Filter out Israeli districts before assembling final location
@@ -340,22 +273,68 @@
         finalState = '';
       }
       
+      // Additional redundancy check for city-states (Singapore, Monaco, Vatican, etc.)
+      if (finalCity && country) {
+        const cityLower = finalCity.toLowerCase();
+        const countryLower = country.toLowerCase();
+        
+        // Special handling for city-states where city equals country
+        if (cityLower === countryLower) {
+          console.log('Detected city-state redundancy:', finalCity, '==', country);
+          
+          // For city-states like Singapore, check if we have a more specific area/neighborhood
+          // Look for the most specific location that isn't the country name
+          const specificAreas = citiesToConsider.filter(cityObj => 
+            cityObj.name.toLowerCase() !== countryLower && 
+            cityObj.priority <= 4 // Only consider specific areas, not generic administrative regions
+          );
+          
+          if (specificAreas.length > 0) {
+            // Sort by priority to get the most specific area
+            specificAreas.sort((a, b) => a.priority - b.priority);
+            const specificArea = specificAreas[0];
+            
+            console.log('Found specific area within city-state:', specificArea.name, 'type:', specificArea.type);
+            finalCity = specificArea.name;
+            // Keep country for context (e.g., "Tampines, Singapore")
+            finalState = ''; // Clear state to avoid triple names
+          } else {
+            // No specific area found, show just the city-state name
+            country = '';
+          }
+        }
+      }
+      
+      // Build final address string
       const parts = [finalCity, finalState, country].filter(Boolean);
+      
+      console.log('Google final location parts (most specific):', parts);
       return parts.join(", ");
     }
     
+    // Check for API quota/permission issues
+    if (data.status === 'REQUEST_DENIED' || data.status === 'OVER_QUERY_LIMIT') {
+      console.warn('Google Geocoding API access issue:', data.status, data.error_message);
+      throw new Error(`Google API ${data.status}: ${data.error_message || 'Access denied or quota exceeded'}`);
+    }
+    
+    // Safer fallback - extract only city, state, country from formatted address
     if (data.results && data.results.length > 0) {
       const formattedAddr = data.results[0].formatted_address;
       const addressParts = formattedAddr.split(', ');
       
+      // Try to extract only the broader location components (last 2-3 parts typically)
+      // Skip detailed addresses like street numbers, building names, etc.
       const broadParts = addressParts.slice(-3).filter(part => {
-        return !part.match(/^\d+/) && 
-               !part.includes('#') && 
-               !part.includes('Suite') && 
-               !part.includes('Floor') && 
-               part.length > 2;
+        // Filter out postal codes, detailed street addresses
+        return !part.match(/^\d+/) && // No leading numbers
+               !part.includes('#') && // No building numbers
+               !part.includes('Suite') && // No suite numbers
+               !part.includes('Floor') && // No floor numbers
+               part.length > 2; // Reasonable length
       });
       
+      // Additional redundancy check for formatted address parts
       const filteredParts = [];
       broadParts.forEach((part, index) => {
         const isRedundant = filteredParts.some(existingPart => {
@@ -375,10 +354,22 @@
         }
       });
       
+      // Additional check for city-states in formatted address fallback
+      if (filteredParts.length > 1) {
+        const lastPart = filteredParts[filteredParts.length - 1];
+        const secondLastPart = filteredParts[filteredParts.length - 2];
+        
+        // If last two parts are identical (city-state case), remove the duplicate
+        if (lastPart.toLowerCase() === secondLastPart.toLowerCase()) {
+          console.log('Detected city-state redundancy in formatted address:', secondLastPart, '==', lastPart);
+          filteredParts.pop(); // Remove the duplicate
+        }
+      }
+      
       return filteredParts.join(", ");
     }
     
-    throw new Error(`Google Geocoding returned status: ${data.status}`);
+    throw new Error('No results from Google Geocoding');
   }
   
   async function reverseGeocodeWithNominatim(lat, lon) {
@@ -386,21 +377,7 @@
     const geo = await res.json();
     const addr = geo.address;
     
-    console.log('Nominatim address components:', addr);
-    
-    // Better error checking for ocean coordinates
-    if (!addr || Object.keys(addr).length === 0) {
-      console.warn('Nominatim returned empty address, checking for water bodies');
-      const waterBody = identifyWaterBody(lat, lon);
-      if (waterBody) {
-        return waterBody;
-      }
-      throw new Error('Nominatim returned no address data and coordinates not in known water body');
-    }
-    
-    window.isLocationInJapan = (addr.country_code === 'jp') || 
-                               (addr.country === 'Japan') || 
-                               (addr.country === '日本');
+    window.isLocationInJapan = addr.country_code === 'jp' || addr.country === 'Japan' || addr.country === '日本';
     
     let city = '';
     let state = '';
@@ -853,6 +830,61 @@
         if (windWaves) {
           weatherIcon.appendChild(windWaves);
         }
+        
+        // Now handle wind-waves logic after elements are restored
+        const windWavesElement = document.getElementById('wind-waves');
+        if (windWavesElement) {
+          if (isWindy) {
+            const repoBaseUrl = 'https://raw.githubusercontent.com/MrChallah/MrChallah.github.io/main/v4/';
+            const fallbackUrl = 'https://maps.gstatic.com/weather/v1/';
+            
+            windWavesElement.onerror = null;
+            windWavesElement.onload = null;
+            
+            windWavesElement.onerror = function() {
+              this.onerror = function() {
+                this.style.display = 'none';
+                
+                let textWind = document.getElementById('text-wind-indicator');
+                if (!textWind) {
+                  textWind = document.createElement('span');
+                  textWind.id = 'text-wind-indicator';
+                  textWind.innerHTML = '💨';
+                  textWind.style.cssText = 'position: absolute; top: 30px; left: 97%; transform: translateX(-50%); font-size: 12px; animation: windWave 1.5s ease-in-out infinite;';
+                  weatherIcon.appendChild(textWind);
+                }
+                textWind.style.display = 'inline-block';
+              };
+              this.src = fallbackUrl + 'windy_breezy.svg';
+            };
+            
+            windWavesElement.src = repoBaseUrl + 'windy.svg';
+            windWavesElement.style.display = 'inline-block';
+            
+            if (isHot) {
+              windWavesElement.classList.remove('only-wind');
+              if (heatWaves) {
+                heatWaves.classList.add('with-wind');
+              }
+            } else {
+              windWavesElement.classList.add('only-wind');
+            }
+          } else {
+            windWavesElement.style.display = 'none';
+            windWavesElement.classList.remove('only-wind');
+            
+            const textWind = document.getElementById('text-wind-indicator');
+            if (textWind) {
+              textWind.style.display = 'none';
+            }
+            
+            if (heatWaves) {
+              heatWaves.classList.remove('with-wind');
+            }
+          }
+        } else {
+          console.warn('Wind waves element not found after restoration');
+        }
       };
       
       imgElement.src = iconUrls.primary;
@@ -871,58 +903,6 @@
           heatWaves.classList.remove('with-wind');
         }
       }
-      
-      const windWaves = document.getElementById('wind-waves');
-      if (windWaves) {
-        if (isWindy) {
-          const repoBaseUrl = 'https://raw.githubusercontent.com/MrChallah/MrChallah.github.io/main/v4/';
-          const fallbackUrl = 'https://maps.gstatic.com/weather/v1/';
-          
-          windWaves.onerror = null;
-          windWaves.onload = null;
-          
-          windWaves.onerror = function() {
-            this.onerror = function() {
-              this.style.display = 'none';
-              
-              let textWind = document.getElementById('text-wind-indicator');
-              if (!textWind) {
-                textWind = document.createElement('span');
-                textWind.id = 'text-wind-indicator';
-                textWind.innerHTML = '💨';
-                textWind.style.cssText = 'position: absolute; top: 30px; left: 97%; transform: translateX(-50%); font-size: 12px; animation: windWave 1.5s ease-in-out infinite;';
-                weatherIcon.appendChild(textWind);
-              }
-              textWind.style.display = 'inline-block';
-            };
-            this.src = fallbackUrl + 'windy_breezy.svg';
-          };
-          
-          windWaves.src = repoBaseUrl + 'windy.svg';
-          windWaves.style.display = 'inline-block';
-          
-          if (isHot) {
-            windWaves.classList.remove('only-wind');
-            if (heatWaves) {
-              heatWaves.classList.add('with-wind');
-            }
-          } else {
-            windWaves.classList.add('only-wind');
-          }
-        } else {
-          windWaves.style.display = 'none';
-          windWaves.classList.remove('only-wind');
-          
-          const textWind = document.getElementById('text-wind-indicator');
-          if (textWind) {
-            textWind.style.display = 'none';
-          }
-          
-          if (heatWaves) {
-            heatWaves.classList.remove('with-wind');
-          }
-        }
-      }
     } catch (error) {
       console.error('Weather fetch failed:', error);
       
@@ -934,42 +914,60 @@
         const weatherIcon = document.getElementById('weather-icon');
         const iconUrls = getGoogleWeatherIcon(cached.weatherCode, cached.isDay, cached.condition);
         
+        // Create new image element for cached data
         const imgElement = document.createElement('img');
         imgElement.alt = cached.description;
         imgElement.style.cssText = 'width: 24px; height: 24px; filter: drop-shadow(-1px -1px 0 #000) drop-shadow(1px -1px 0 #000) drop-shadow(-1px 1px 0 #000) drop-shadow(1px 1px 0 #000) drop-shadow(0 0 4px #000);';
         imgElement.src = iconUrls.primary;
         imgElement.onerror = function() { this.src = iconUrls.fallback; };
         
-        weatherIcon.innerHTML = '';
-        weatherIcon.appendChild(imgElement);
-        
-        const heatWaves = document.getElementById('heat-waves');
-        const windWaves = document.getElementById('wind-waves');
-        
-        if (heatWaves) {
-          heatWaves.style.display = cached.isHot ? 'inline-block' : 'none';
-          if (cached.isHot && cached.isWindy) {
-            heatWaves.classList.add('with-wind');
-          } else {
-            heatWaves.classList.remove('with-wind');
+        // Use proper element restoration for cached data
+        imgElement.onload = function() {
+          // Preserve secondary effects before clearing
+          const heatWaves = weatherIcon.querySelector('#heat-waves');
+          const windWaves = weatherIcon.querySelector('#wind-waves');
+          
+          // Update icon
+          weatherIcon.innerHTML = '';
+          weatherIcon.appendChild(imgElement);
+          
+          // Re-add preserved secondary effects
+          if (heatWaves) {
+            weatherIcon.appendChild(heatWaves);
           }
-        }
-        
-        if (windWaves) {
-          windWaves.style.display = cached.isWindy ? 'inline-block' : 'none';
-          if (cached.isWindy) {
-            if (cached.isHot) {
-              windWaves.classList.remove('only-wind');
+          if (windWaves) {
+            weatherIcon.appendChild(windWaves);
+          }
+          
+          // Update secondary effects with cached data after elements are restored
+          const restoredHeatWaves = document.getElementById('heat-waves');
+          const restoredWindWaves = document.getElementById('wind-waves');
+          
+          if (restoredHeatWaves) {
+            restoredHeatWaves.style.display = cached.isHot ? 'inline-block' : 'none';
+            if (cached.isHot && cached.isWindy) {
+              restoredHeatWaves.classList.add('with-wind');
             } else {
-              windWaves.classList.add('only-wind');
+              restoredHeatWaves.classList.remove('with-wind');
             }
-          } else {
-            windWaves.classList.remove('only-wind');
           }
-        }
+          
+          if (restoredWindWaves) {
+            restoredWindWaves.style.display = cached.isWindy ? 'inline-block' : 'none';
+            if (cached.isWindy) {
+              if (cached.isHot) {
+                restoredWindWaves.classList.remove('only-wind');
+              } else {
+                restoredWindWaves.classList.add('only-wind');
+              }
+            } else {
+              restoredWindWaves.classList.remove('only-wind');
+            }
+          }
+        };
         
-        if (heatWaves) weatherIcon.appendChild(heatWaves);
-        if (windWaves) weatherIcon.appendChild(windWaves);
+        // Start loading the cached weather icon
+        imgElement.src = iconUrls.primary;
       } else {
         // Only show "Weather N/A" if no cached data is available at all
         weatherEl.textContent = "Weather N/A";
